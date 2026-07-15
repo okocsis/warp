@@ -14,6 +14,7 @@ use warp_core::send_telemetry_from_ctx;
 use warp_errors::report_error;
 use warp_multi_agent_api as api;
 use warpui_core::{Entity, ModelContext, SingletonEntity};
+use warp_core::features::FeatureFlag;
 use warpui_extras::secure_storage::{self, AppContextExt};
 
 use crate::LLMProvider;
@@ -38,6 +39,11 @@ const LEGACY_ENDPOINT_PREFIX: &str = "legacy-";
 /// Kept separate from [`SECURE_STORAGE_KEY`] because these are OAuth tokens with
 /// a refresh lifecycle, not a user-pasted static key.
 const GROK_SECURE_STORAGE_KEY: &str = "GrokOAuthTokens";
+
+/// Secure-storage key for a connected ChatGPT (Codex) subscription's OAuth
+/// tokens. Kept separate from pasted API keys because these credentials have a
+/// refresh lifecycle.
+const CODEX_SECURE_STORAGE_KEY: &str = "CodexOAuthTokens";
 
 /// Emitted when user-provided API keys are updated in-memory.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -488,6 +494,47 @@ pub enum GrokRefreshOutcome {
     Failed,
 }
 
+/// OAuth tokens for a connected ChatGPT (Codex) subscription.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct CodexTokens {
+    pub access_token: String,
+    #[serde(default)]
+    pub refresh_token: Option<String>,
+    #[serde(default)]
+    pub id_token: Option<String>,
+    pub chatgpt_account_id: String,
+    #[serde(default)]
+    pub expires_at: Option<SystemTime>,
+    #[serde(default)]
+    pub connected_at: Option<SystemTime>,
+}
+
+impl CodexTokens {
+    /// Returns a non-empty token regardless of expiry. The server remains the
+    /// authority on validity while refresh orchestration keeps it fresh.
+    pub fn access_token_for_request(&self) -> Option<&str> {
+        (!self.access_token.trim().is_empty()).then_some(self.access_token.as_str())
+    }
+
+    pub fn needs_refresh(&self, lead_time: Duration) -> bool {
+        match self.expires_at {
+            Some(expires_at) => expires_at <= SystemTime::now() + lead_time,
+            None => false,
+        }
+    }
+
+    pub fn is_expired(&self) -> bool {
+        self.needs_refresh(Duration::ZERO)
+    }
+}
+
+/// Outcome delivered to requests waiting on a Codex OAuth token refresh.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CodexRefreshOutcome {
+    Refreshed,
+    Failed,
+}
+
 /// Controls how AWS credentials are refreshed by [`ApiKeyManager`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum AwsCredentialsRefreshStrategy {
@@ -532,6 +579,14 @@ pub struct ApiKeyManager {
     /// refresh is running. Always cleared when the refresh finishes.
     #[cfg(not(target_family = "wasm"))]
     pub(crate) grok_refresh_waiters: Option<Vec<oneshot::Sender<GrokRefreshOutcome>>>,
+    /// OAuth tokens for a connected ChatGPT (Codex) subscription.
+    codex_tokens: Option<CodexTokens>,
+    /// Whether the current feature and BYO policies allow Codex refresh.
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) codex_refresh_allowed: bool,
+    /// Single-flight guard and completion waiters for Codex refresh.
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) codex_refresh_waiters: Option<Vec<oneshot::Sender<CodexRefreshOutcome>>>,
     /// Coordinates request-time GEAP refreshes. Installed by the mint kickoff
     /// itself (see `install_geap_refresh_waiter`) immediately before the state
     /// transitions to `Refreshing`, and taken when the mint completes, so
@@ -550,6 +605,7 @@ pub struct ApiKeyManager {
     pub(crate) geap_credentials_state: GeapCredentialsState,
     secure_storage_write_version: u64,
     grok_secure_storage_write_version: u64,
+    codex_secure_storage_write_version: u64,
 }
 
 #[derive(Clone)]
@@ -605,6 +661,7 @@ impl ApiKeyManager {
         let custom_endpoint_keys = Self::load_custom_endpoint_keys_from_secure_storage(ctx);
         let resolved_custom_endpoints = keys.custom_endpoints.clone();
         let grok_tokens = Self::load_grok_tokens_from_secure_storage(ctx);
+        let codex_tokens = Self::load_codex_tokens_from_secure_storage(ctx);
         Self {
             keys,
             custom_endpoints: CustomEndpointState {
@@ -614,11 +671,15 @@ impl ApiKeyManager {
                 resolved: resolved_custom_endpoints,
             },
             grok_tokens,
+            codex_tokens,
             #[cfg(not(target_family = "wasm"))]
             grok_refresh_allowed: false,
             #[cfg(not(target_family = "wasm"))]
             grok_refresh_waiters: None,
             #[cfg(not(target_family = "wasm"))]
+            codex_refresh_allowed: false,
+            #[cfg(not(target_family = "wasm"))]
+            codex_refresh_waiters: None,
             geap_refresh_waiters: None,
             #[cfg(not(target_family = "wasm"))]
             geap_last_mint_failure: None,
@@ -627,6 +688,7 @@ impl ApiKeyManager {
             geap_credentials_state: GeapCredentialsState::Missing,
             secure_storage_write_version: 0,
             grok_secure_storage_write_version: 0,
+            codex_secure_storage_write_version: 0,
         }
     }
 
@@ -790,8 +852,22 @@ impl ApiKeyManager {
             .is_some()
     }
 
+    /// The currently stored ChatGPT (Codex) OAuth tokens.
+    pub fn codex_tokens(&self) -> Option<&CodexTokens> {
+        self.codex_tokens.as_ref()
+    }
+
+    /// Returns `true` when a Codex subscription has a usable access token and
+    /// account id.
+    pub fn has_codex_subscription(&self) -> bool {
+        self.codex_tokens.as_ref().is_some_and(|tokens| {
+            tokens.access_token_for_request().is_some()
+                && !tokens.chatgpt_account_id.trim().is_empty()
+        })
+    }
+
     /// Returns `true` when the user has any usable BYO credential: a pasted
-    /// provider or custom-endpoint key, or a connected Grok subscription.
+    /// provider or custom-endpoint key, or a connected subscription.
     pub fn has_any_key(&self) -> bool {
         self.keys.provider_key_count() > 0
             || self
@@ -800,6 +876,7 @@ impl ApiKeyManager {
                 .iter()
                 .any(|endpoint| !endpoint.api_key.trim().is_empty())
             || self.has_grok_subscription()
+            || self.has_codex_subscription()
     }
 
     /// Stores (or clears, with `None`) the xAI/Grok OAuth tokens and persists
@@ -824,6 +901,37 @@ impl ApiKeyManager {
         }
     }
 
+    /// Stores or clears the ChatGPT (Codex) OAuth tokens and persists the
+    /// change to their dedicated secure-storage entry.
+    pub fn set_codex_tokens(&mut self, tokens: Option<CodexTokens>, ctx: &mut ModelContext<Self>) {
+        if self.codex_tokens == tokens {
+            return;
+        }
+        self.codex_tokens = tokens;
+        ctx.emit(ApiKeyManagerEvent::KeysUpdated);
+        self.write_codex_tokens_to_secure_storage(ctx);
+    }
+
+    pub fn set_google_key(&mut self, key: Option<String>, ctx: &mut ModelContext<Self>) {
+        self.keys.google = key;
+        ctx.emit(ApiKeyManagerEvent::KeysUpdated);
+        self.write_keys_to_secure_storage(ctx);
+    }
+
+    pub fn set_anthropic_key(&mut self, key: Option<String>, ctx: &mut ModelContext<Self>) {
+        self.keys.anthropic = key;
+        ctx.emit(ApiKeyManagerEvent::KeysUpdated);
+        self.write_keys_to_secure_storage(ctx);
+    }
+
+    pub fn set_openai_key(&mut self, key: Option<String>, ctx: &mut ModelContext<Self>) {
+        self.keys.openai = key;
+        ctx.emit(ApiKeyManagerEvent::KeysUpdated);
+        self.write_keys_to_secure_storage(ctx);
+    }
+
+    pub fn set_open_router_key(&mut self, key: Option<String>, ctx: &mut ModelContext<Self>) {
+        self.keys.open_router = key;
     pub fn set_provider_key(
         &mut self,
         provider: LLMProvider,
@@ -1058,6 +1166,23 @@ impl ApiKeyManager {
             .flatten()
             .unwrap_or_default();
 
+        // Codex OAuth credentials are BYO auth and additionally stay behind
+        // the default-off client feature gate until the server wire contract
+        // and routing support are live.
+        let codex_oauth_credentials = (include_byo_keys
+            && FeatureFlag::CodexSubscription.is_enabled())
+        .then(|| {
+            let tokens = self.codex_tokens.as_ref()?;
+            let access_token = tokens.access_token_for_request()?;
+            (!tokens.chatgpt_account_id.trim().is_empty()).then(|| {
+                api::request::settings::api_keys::CodexOauthCredentials {
+                    access_token: access_token.to_owned(),
+                    chatgpt_account_id: tokens.chatgpt_account_id.clone(),
+                }
+            })
+        })
+        .flatten();
+
         // Also include credentials when running with OIDC-managed Bedrock inference, regardless
         // of the per-user setting flag (which only applies to the local credential chain path).
         let include_aws = include_aws_bedrock_credentials
@@ -1089,6 +1214,7 @@ impl ApiKeyManager {
             && grok_oauth_access_token.is_empty()
             && aws_credentials.is_none()
             && google_cloud_credentials.is_none()
+            && codex_oauth_credentials.is_none()
         {
             None
         } else {
@@ -1101,7 +1227,7 @@ impl ApiKeyManager {
                 allow_use_of_warp_credits: false,
                 aws_credentials,
                 google_cloud_credentials,
-                codex_oauth_credentials: None,
+                codex_oauth_credentials,
             })
         }
     }
@@ -1263,6 +1389,62 @@ impl ApiKeyManager {
                     anyhow::Error::new(e)
                         .context("Failed to persist Grok tokens to secure storage")
                 );
+            }
+        });
+    }
+
+    fn load_codex_tokens_from_secure_storage(ctx: &mut ModelContext<Self>) -> Option<CodexTokens> {
+        let json = match ctx.secure_storage().read_value(CODEX_SECURE_STORAGE_KEY) {
+            Ok(json) => json,
+            Err(error) => {
+                if !matches!(error, secure_storage::Error::NotFound) {
+                    report_error!(anyhow::Error::new(error)
+                        .context("Failed to read Codex tokens from secure storage"));
+                }
+                return None;
+            }
+        };
+
+        match serde_json::from_str(&json) {
+            Ok(tokens) => Some(tokens),
+            Err(error) => {
+                report_error!(
+                    anyhow::Error::new(error).context("Failed to deserialize Codex tokens")
+                );
+                None
+            }
+        }
+    }
+
+    fn write_codex_tokens_to_secure_storage(&mut self, ctx: &mut ModelContext<Self>) {
+        let payload = match self.codex_tokens.as_ref().map(serde_json::to_string) {
+            Some(Ok(json)) => Some(json),
+            Some(Err(error)) => {
+                report_error!(
+                    anyhow::Error::new(error).context("Failed to serialize Codex tokens")
+                );
+                return;
+            }
+            None => None,
+        };
+        self.codex_secure_storage_write_version += 1;
+        let write_version = self.codex_secure_storage_write_version;
+
+        ctx.spawn(async move { payload }, move |manager, payload, ctx| {
+            if write_version != manager.codex_secure_storage_write_version {
+                return;
+            }
+            let result = match &payload {
+                Some(json) => ctx
+                    .secure_storage()
+                    .write_value(CODEX_SECURE_STORAGE_KEY, json),
+                None => ctx.secure_storage().remove_value(CODEX_SECURE_STORAGE_KEY),
+            };
+            if let Err(error) = result {
+                if !matches!(error, secure_storage::Error::NotFound) {
+                    report_error!(anyhow::Error::new(error)
+                        .context("Failed to persist Codex tokens to secure storage"));
+                }
             }
         });
     }

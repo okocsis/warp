@@ -10,11 +10,11 @@ use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest, Sha256};
 use url::Url;
 use uuid::Uuid;
+use warp_core::features::FeatureFlag;
 use warp_core::send_telemetry_from_ctx;
 use warp_errors::report_error;
 use warp_multi_agent_api as api;
 use warpui_core::{Entity, ModelContext, SingletonEntity};
-use warp_core::features::FeatureFlag;
 use warpui_extras::secure_storage::{self, AppContextExt};
 
 use crate::LLMProvider;
@@ -606,6 +606,8 @@ pub struct ApiKeyManager {
     secure_storage_write_version: u64,
     grok_secure_storage_write_version: u64,
     codex_secure_storage_write_version: u64,
+    #[cfg(test)]
+    pub(crate) codex_refresh_scheduled_count: usize,
 }
 
 #[derive(Clone)]
@@ -689,6 +691,8 @@ impl ApiKeyManager {
             secure_storage_write_version: 0,
             grok_secure_storage_write_version: 0,
             codex_secure_storage_write_version: 0,
+            #[cfg(test)]
+            codex_refresh_scheduled_count: 0,
         }
     }
 
@@ -1420,9 +1424,7 @@ impl ApiKeyManager {
         let payload = match self.codex_tokens.as_ref().map(serde_json::to_string) {
             Some(Ok(json)) => Some(json),
             Some(Err(error)) => {
-                report_error!(
-                    anyhow::Error::new(error).context("Failed to serialize Codex tokens")
-                );
+                report_error!(anyhow::Error::new(error).context("Failed to serialize Codex tokens"));
                 return;
             }
             None => None,

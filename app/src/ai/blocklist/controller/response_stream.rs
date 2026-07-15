@@ -40,6 +40,30 @@ const MAX_RECOVERY_ATTEMPTS: usize = 3;
 #[cfg(not(target_family = "wasm"))]
 const GROK_REFRESH_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// Maximum time to wait for a request-time Codex OAuth token refresh before
+/// failing the request. Bounded so a hung refresh can't stall the request.
+#[cfg(not(target_family = "wasm"))]
+const CODEX_REFRESH_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+#[cfg(not(target_family = "wasm"))]
+fn replace_codex_oauth_credentials(
+    keys: &mut warp_multi_agent_api::request::settings::ApiKeys,
+    tokens: &::ai::api_keys::CodexTokens,
+) -> bool {
+    let Some(access_token) = tokens.access_token_for_request() else {
+        return false;
+    };
+    if tokens.chatgpt_account_id.trim().is_empty() {
+        return false;
+    }
+    keys.codex_oauth_credentials = Some(
+        warp_multi_agent_api::request::settings::api_keys::CodexOauthCredentials {
+            access_token: access_token.to_owned(),
+            chatgpt_account_id: tokens.chatgpt_account_id.clone(),
+        },
+    );
+    true
+}
 /// How long a request will hold for a request-time GEAP credential mint before
 /// giving up and sending anyway.
 #[cfg(not(target_family = "wasm"))]
@@ -532,7 +556,11 @@ impl ResponseStream {
     }
 
     /// Sends the request for `request_id`. When the request's model is served by
-    /// the connected Grok subscription or may route to Gemini Enterprise, and
+    /// a connected subscription and that subscription's OAuth token is already
+    /// past hard expiry, this first blocks on the subscription's single shared
+    /// refresh before sending. Requests that don't use a subscription (and
+    /// tokens that are still valid) are sent directly.
+    /// The connected Grok subscription or may route to Gemini Enterprise, and
     /// that credential is already past hard expiry, this first blocks on a
     /// single shared refresh (owned by `ApiKeyManager`, so only one runs at a
     /// time) before sending. Requests with valid credentials, and requests for
@@ -544,10 +572,10 @@ impl ResponseStream {
         cancellation_rx: oneshot::Receiver<()>,
         ctx: &mut ModelContext<Self>,
     ) {
-        // The Grok subscription and its OAuth refresh are native-only.
+        // Subscription OAuth refresh is native-only.
         #[cfg(not(target_family = "wasm"))]
         {
-            use ::ai::api_keys::{ApiKeyManager, GeapRefreshOutcome, GrokRefreshOutcome};
+            use ::ai::api_keys::{ApiKeyManager, GeapRefreshOutcome, GrokRefreshOutcome, CodexRefreshOutcome};
             use warpui::r#async::FutureExt as _;
 
             use crate::ai::llms::{LLMModelHost, LLMPreferences, LLMProvider};
@@ -613,6 +641,60 @@ impl ResponseStream {
                 }
             }
 
+            // Ordinary OpenAI API-key requests must remain unaffected. Only
+            // refresh when this is an OpenAI request whose prepared credentials
+            // selected an available Codex subscription.
+            let is_openai_request = LLMPreferences::as_ref(ctx)
+                .get_llm_info(&params.model)
+                .is_some_and(|info| info.provider == LLMProvider::OpenAI);
+            let has_codex_subscription = ApiKeyManager::as_ref(ctx).has_codex_subscription();
+            let has_selected_codex_credentials = params
+                .api_keys
+                .as_ref()
+                .and_then(|keys| keys.codex_oauth_credentials.as_ref())
+                .is_some();
+            let uses_codex_subscription = is_openai_request
+                && has_codex_subscription
+                && has_selected_codex_credentials;
+            if uses_codex_subscription {
+                let byo_allowed = UserWorkspaces::as_ref(ctx).is_byo_api_key_enabled(ctx);
+                let refresh_rx = ApiKeyManager::handle(ctx).update(ctx, |manager, ctx| {
+                    manager.begin_expired_codex_refresh(byo_allowed, ctx)
+                });
+                if let Some(refresh_rx) = refresh_rx {
+                    let _ = ctx.spawn(
+                        async move {
+                            refresh_rx
+                                .with_timeout(CODEX_REFRESH_REQUEST_TIMEOUT)
+                                .await
+                        },
+                        move |me, result, ctx| {
+                            // Cancelled or superseded while refreshing — drop this attempt.
+                            if me.current_request_id != Some(request_id) {
+                                return;
+                            }
+                            if matches!(result, Ok(Ok(CodexRefreshOutcome::Refreshed))) {
+                                let credentials_replaced = me
+                                    .params
+                                    .api_keys
+                                    .as_mut()
+                                    .zip(ApiKeyManager::as_ref(ctx).codex_tokens())
+                                    .is_some_and(|(keys, tokens)| {
+                                        replace_codex_oauth_credentials(keys, tokens)
+                                    });
+                                if !credentials_replaced {
+                                    me.surface_codex_refresh_failure(request_id, ctx);
+                                    return;
+                                }
+                                Self::spawn_generate(
+                                    request_id,
+                                    me.params.clone(),
+                                    cancellation_rx,
+                                    ctx,
+                                );
+                            } else {
+                                me.surface_codex_refresh_failure(request_id, ctx);
+                            }
             let uses_geap = LLMPreferences::as_ref(ctx)
                 .get_llm_info(&params.model, ctx)
                 .is_some_and(|info| {
@@ -685,6 +767,19 @@ impl ResponseStream {
             NetworkStatus::as_ref(ctx).is_online(),
             self.recovery.attempts_used(),
         );
+        ctx.emit(ResponseStreamEvent::ReceivedEvent(Consumable::new(Err(
+            error,
+        ))));
+        self.on_response_stream_complete(request_id, ctx);
+    }
+
+    /// Emits a terminal, user-visible error for a failed request-time Codex
+    /// token refresh instead of sending the request with an expired token.
+    #[cfg(not(target_family = "wasm"))]
+    fn surface_codex_refresh_failure(&mut self, request_id: Uuid, ctx: &mut ModelContext<Self>) {
+        let error = Arc::new(AIApiError::CodexSubscriptionTokenRefreshFailed);
+        self.error_event_emitted = true;
+        self.report_request_failure(&error, NetworkStatus::as_ref(ctx).is_online());
         ctx.emit(ResponseStreamEvent::ReceivedEvent(Consumable::new(Err(
             error,
         ))));

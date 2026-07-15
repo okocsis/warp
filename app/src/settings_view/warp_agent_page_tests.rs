@@ -17,7 +17,12 @@ use warp_core::features::FeatureFlag;
 #[cfg(not(target_family = "wasm"))]
 use warpui::App;
 
-use super::{AgentAttributionToggleState, derive_agent_attribution_toggle_state};
+#[cfg(not(target_family = "wasm"))]
+use super::take_codex_tokens_for_disconnect;
+use super::{
+    derive_agent_attribution_toggle_state, should_render_codex_subscription,
+    AgentAttributionToggleState, API_KEYS_SEARCH_TERMS,
+};
 use crate::workspaces::workspace::AdminEnablementSetting;
 
 #[test]
@@ -170,9 +175,8 @@ fn codex_connect_stores_and_disconnect_clears_tokens() {
         });
         let manager = app.add_singleton_model(ApiKeyManager::new);
         let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"none"}"#);
-        let payload = URL_SAFE_NO_PAD.encode(
-            br#"{"https://api.openai.com/auth":{"chatgpt_account_id":"account-123"}}"#,
-        );
+        let payload = URL_SAFE_NO_PAD
+            .encode(br#"{"https://api.openai.com/auth":{"chatgpt_account_id":"account-123"}}"#);
         let id_token = format!("{header}.{payload}.signature");
 
         manager.update(&mut app, |manager, ctx| {

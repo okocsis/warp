@@ -893,6 +893,9 @@ pub enum FeatureFlag {
     /// connect a Grok subscription instead of pasting an API key.
     SuperGrok,
 
+    /// Connect a ChatGPT (Codex) subscription via OAuth as a BYO credential
+    CodexSubscription,
+
     /// Gates Gemini Enterprise (GEAP) BYOLLM, which lets users
     /// route eliglible models to GEAP instead of Warp-managed inference.
     GeminiEnterprise,
@@ -1053,6 +1056,9 @@ pub const DOGFOOD_FLAGS: &[FeatureFlag] = &[
     FeatureFlag::MultiLevelOrchestration,
     FeatureFlag::McpJsonTreeView,
     FeatureFlag::BoxDrawingGlyphs,
+    FeatureFlag::CodexSubscription,
+    FeatureFlag::WellKnownMcpIds,
+    FeatureFlag::FactoryMcp,
     FeatureFlag::PricingTransparency,
     FeatureFlag::PeriodicHandoffCheckpoints,
     FeatureFlag::CtrlCCancelsThirdPartyHarness,

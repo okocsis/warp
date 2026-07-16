@@ -812,6 +812,8 @@ pub struct AISettingsPageView {
     codex_oauth_connecting: bool,
     #[cfg(not(target_family = "wasm"))]
     codex_oauth_attempt_generation: u64,
+    #[cfg(not(target_family = "wasm"))]
+    codex_oauth_cancel_handle: Option<codex_oauth::OauthCancelHandle>,
 }
 
 const CODEX_OAUTH_CONNECT_TOAST_OBJECT_ID: &str = "codex_oauth_connect_toast";
@@ -2105,6 +2107,8 @@ impl AISettingsPageView {
             codex_oauth_connecting: false,
             #[cfg(not(target_family = "wasm"))]
             codex_oauth_attempt_generation: 0,
+            #[cfg(not(target_family = "wasm"))]
+            codex_oauth_cancel_handle: None,
         }
     }
 
@@ -2792,6 +2796,16 @@ impl AISettingsPageView {
         });
     }
     #[cfg(not(target_family = "wasm"))]
+    fn invalidate_codex_oauth_attempt(&mut self) {
+        if let Some(cancel_handle) = self.codex_oauth_cancel_handle.take() {
+            cancel_handle.cancel();
+        }
+        self.codex_oauth_connecting = false;
+        self.codex_oauth_attempt_generation =
+            self.codex_oauth_attempt_generation.wrapping_add(1);
+    }
+
+    #[cfg(not(target_family = "wasm"))]
     fn start_codex_oauth(&mut self, ctx: &mut ViewContext<Self>) {
         use warp_core::safe_error;
 
@@ -2799,9 +2813,14 @@ impl AISettingsPageView {
         use crate::workspace::WorkspaceAction;
         use crate::ToastStack;
 
-        if !FeatureFlag::CodexSubscription.is_enabled() || self.codex_oauth_connecting {
+        let visibility = CustomInferenceVisibility::compute(ctx);
+        if !should_render_codex_subscription(visibility.show_provider_keys)
+            || !visibility.provider_keys_enabled
+        {
             return;
         }
+
+        self.invalidate_codex_oauth_attempt();
 
         let attempt = match codex_oauth::OauthAttempt::start() {
             Ok(attempt) => attempt,
@@ -2820,8 +2839,8 @@ impl AISettingsPageView {
             }
         };
 
-        self.codex_oauth_attempt_generation = self.codex_oauth_attempt_generation.wrapping_add(1);
         let attempt_generation = self.codex_oauth_attempt_generation;
+        self.codex_oauth_cancel_handle = Some(attempt.cancel_handle());
         self.codex_oauth_connecting = true;
         ctx.notify();
 
@@ -2846,12 +2865,15 @@ impl AISettingsPageView {
             move |me, result, ctx| {
                 // A disconnect or newer login invalidates this callback, so it
                 // cannot restore or overwrite credentials from a stale attempt.
-                if !me.codex_oauth_connecting
-                    || me.codex_oauth_attempt_generation != attempt_generation
-                {
+                if !codex_oauth_attempt_is_current(
+                    me.codex_oauth_connecting,
+                    me.codex_oauth_attempt_generation,
+                    attempt_generation,
+                ) {
                     return;
                 }
                 me.codex_oauth_connecting = false;
+                me.codex_oauth_cancel_handle = None;
 
                 let window_id = ctx.window_id();
                 let toast = match result {
@@ -4813,15 +4835,9 @@ impl TypedActionView for AISettingsPageView {
                 self.start_codex_oauth(ctx);
             }
             AISettingsPageAction::DisconnectCodexSubscription => {
-                if !FeatureFlag::CodexSubscription.is_enabled() {
-                    return;
-                }
-
                 #[cfg(not(target_family = "wasm"))]
                 {
-                    self.codex_oauth_connecting = false;
-                    self.codex_oauth_attempt_generation =
-                        self.codex_oauth_attempt_generation.wrapping_add(1);
+                    self.invalidate_codex_oauth_attempt();
                     let tokens = ApiKeyManager::handle(ctx).update(ctx, |manager, ctx| {
                         take_codex_tokens_for_disconnect(manager, ctx)
                     });
@@ -4856,6 +4872,25 @@ impl TypedActionView for AISettingsPageView {
                 });
                 ctx.notify();
             }
+        }
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn codex_oauth_attempt_is_current(
+    connecting: bool,
+    current_generation: u64,
+    completed_generation: u64,
+) -> bool {
+    connecting && current_generation == completed_generation
+}
+
+
+#[cfg(not(target_family = "wasm"))]
+impl Drop for AISettingsPageView {
+    fn drop(&mut self) {
+        if let Some(cancel_handle) = self.codex_oauth_cancel_handle.take() {
+            cancel_handle.cancel();
         }
     }
 }
@@ -8866,10 +8901,11 @@ impl ApiKeysWidget {
                 })
         });
         let codex_connecting_button = ctx.add_typed_action_view(|_| {
-            ActionButton::new("Connecting", SecondaryTheme).with_size(ButtonSize::Small)
-        });
-        codex_connecting_button.update(ctx, |button, ctx| {
-            button.set_disabled(true, ctx);
+            ActionButton::new("Cancel", DangerSecondaryTheme)
+                .with_size(ButtonSize::Small)
+                .on_click(|ctx| {
+                    ctx.dispatch_typed_action(AISettingsPageAction::DisconnectCodexSubscription);
+                })
         });
         let codex_disconnect_button = ctx.add_typed_action_view(|_| {
             ActionButton::new("Disconnect", DangerSecondaryTheme)
@@ -8878,6 +8914,11 @@ impl ApiKeysWidget {
                     ctx.dispatch_typed_action(AISettingsPageAction::DisconnectCodexSubscription);
                 })
         });
+        let controls_enabled = subscription_controls_enabled(
+            is_any_ai_enabled,
+            is_byo_enabled,
+            member_byo_keys_allowed,
+        );
         for button in [
             &grok_connect_button,
             &grok_disconnect_button,
@@ -8885,10 +8926,7 @@ impl ApiKeysWidget {
             &codex_disconnect_button,
         ] {
             button.update(ctx, |button, ctx| {
-                button.set_disabled(
-                    !(is_any_ai_enabled && is_byo_enabled && member_byo_keys_allowed),
-                    ctx,
-                );
+                button.set_disabled(!controls_enabled, ctx);
             });
         }
 
@@ -8908,7 +8946,11 @@ impl ApiKeysWidget {
                 for button in &subscription_buttons {
                     button.update(ctx, |button, ctx| {
                         button.set_disabled(
-                            !(is_any_ai_enabled && is_byo_enabled && member_byo_keys_allowed),
+                            !subscription_controls_enabled(
+                                is_any_ai_enabled,
+                                is_byo_enabled,
+                                member_byo_keys_allowed,
+                            ),
                             ctx,
                         );
                     });
@@ -8917,10 +8959,52 @@ impl ApiKeysWidget {
             }
         });
 
+        let subscription_buttons = [
+            grok_connect_button.clone(),
+            grok_disconnect_button.clone(),
+            codex_connect_button.clone(),
+            codex_disconnect_button.clone(),
+        ];
+        ctx.subscribe_to_model(&AISettings::handle(ctx), move |_, settings, event, ctx| {
+            if matches!(event, AISettingsChangedEvent::IsAnyAIEnabled { .. }) {
+                let is_any_ai_enabled = settings.as_ref(ctx).is_any_ai_enabled(ctx);
+                let workspace = UserWorkspaces::as_ref(ctx);
+                let is_enabled = subscription_controls_enabled(
+                    is_any_ai_enabled,
+                    workspace.is_byo_api_key_enabled(ctx),
+                    workspace.are_member_byo_keys_allowed(),
+                );
+                for button in &subscription_buttons {
+                    button.update(ctx, |button, ctx| {
+                        button.set_disabled(!is_enabled, ctx);
+                    });
+                }
+                ctx.notify();
+            }
+        });
+
         // Re-render subscription rows whenever stored tokens change (a connect,
-        // disconnect, or background refresh).
-        ctx.subscribe_to_model(&ApiKeyManager::handle(ctx), |_, _, event, ctx| {
+        // disconnect, or background refresh), and recompute control enablement
+        // from the current effective global-AI and BYO policy.
+        let subscription_buttons = [
+            grok_connect_button.clone(),
+            grok_disconnect_button.clone(),
+            codex_connect_button.clone(),
+            codex_disconnect_button.clone(),
+        ];
+        ctx.subscribe_to_model(&ApiKeyManager::handle(ctx), move |_, _, event, ctx| {
             if matches!(event, ApiKeyManagerEvent::KeysUpdated) {
+                let workspace = UserWorkspaces::as_ref(ctx);
+                let is_enabled = subscription_controls_enabled(
+                    AISettings::as_ref(ctx).is_any_ai_enabled(ctx),
+                    workspace.is_byo_api_key_enabled(ctx),
+                    workspace.are_member_byo_keys_allowed(),
+                );
+                for button in &subscription_buttons {
+                    button.update(ctx, |button, ctx| {
+                        button.set_disabled(!is_enabled, ctx);
+                    });
+                }
                 ctx.notify();
             }
         });
@@ -9599,6 +9683,14 @@ impl ApiKeysWidget {
     }
 }
 
+fn subscription_controls_enabled(
+    is_any_ai_enabled: bool,
+    is_byo_enabled: bool,
+    member_byo_keys_allowed: bool,
+) -> bool {
+    is_any_ai_enabled && is_byo_enabled && member_byo_keys_allowed
+}
+
 /// Visibility and enabled-state rules for the member-facing Custom Inference
 /// settings section (provider API keys + custom endpoints).
 #[derive(Clone, Copy)]
@@ -9608,6 +9700,7 @@ struct CustomInferenceVisibility {
     show_provider_keys: bool,
     provider_keys_enabled: bool,
     show_custom_inference: bool,
+
     custom_inference_controls_enabled: bool,
     managed_byok_byoe_enabled: bool,
 }

@@ -535,6 +535,19 @@ pub enum CodexRefreshOutcome {
     Failed,
 }
 
+#[cfg(not(target_family = "wasm"))]
+pub(crate) struct PendingCodexRefresh {
+    pub(crate) refresh_token: String,
+    pub(crate) waiters: Vec<oneshot::Sender<CodexRefreshOutcome>>,
+}
+
+#[cfg(not(target_family = "wasm"))]
+pub(crate) struct CodexRefreshFlight {
+    pub(crate) refresh_token: String,
+    pub(crate) waiters: Vec<oneshot::Sender<CodexRefreshOutcome>>,
+    pub(crate) pending: Option<PendingCodexRefresh>,
+}
+
 /// Controls how AWS credentials are refreshed by [`ApiKeyManager`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum AwsCredentialsRefreshStrategy {
@@ -584,8 +597,10 @@ pub struct ApiKeyManager {
     /// Whether the current feature and BYO policies allow Codex refresh.
     #[cfg(not(target_family = "wasm"))]
     pub(crate) codex_refresh_allowed: bool,
-    /// Single-flight guard and completion waiters for Codex refresh.
+    /// Token-identity-keyed single-flight state for Codex refresh. A different
+    /// current token is parked rather than joining the active token's outcome.
     #[cfg(not(target_family = "wasm"))]
+    pub(crate) codex_refresh_state: Option<CodexRefreshFlight>,
     pub(crate) codex_refresh_waiters: Option<Vec<oneshot::Sender<CodexRefreshOutcome>>>,
     /// Coordinates request-time GEAP refreshes. Installed by the mint kickoff
     /// itself (see `install_geap_refresh_waiter`) immediately before the state
@@ -681,6 +696,7 @@ impl ApiKeyManager {
             #[cfg(not(target_family = "wasm"))]
             codex_refresh_allowed: false,
             #[cfg(not(target_family = "wasm"))]
+            codex_refresh_state: None,
             codex_refresh_waiters: None,
             geap_refresh_waiters: None,
             #[cfg(not(target_family = "wasm"))]
@@ -880,7 +896,7 @@ impl ApiKeyManager {
                 .iter()
                 .any(|endpoint| !endpoint.api_key.trim().is_empty())
             || self.has_grok_subscription()
-            || self.has_codex_subscription()
+            || (FeatureFlag::CodexSubscription.is_enabled() && self.has_codex_subscription())
     }
 
     /// Stores (or clears, with `None`) the xAI/Grok OAuth tokens and persists
@@ -1174,6 +1190,7 @@ impl ApiKeyManager {
         // the default-off client feature gate until the server wire contract
         // and routing support are live.
         let codex_oauth_credentials = (include_byo_keys
+            && openai.trim().is_empty()
             && FeatureFlag::CodexSubscription.is_enabled())
         .then(|| {
             let tokens = self.codex_tokens.as_ref()?;

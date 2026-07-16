@@ -165,14 +165,6 @@ impl PendingResume {
 
 #[cfg(not(target_family = "wasm"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CodexRefreshCompletion {
-    Refreshed,
-    Failed,
-    TimedOut,
-}
-
-#[cfg(not(target_family = "wasm"))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CodexRefreshAction {
     Send,
     Fail,
@@ -183,7 +175,6 @@ enum CodexRefreshAction {
 fn complete_codex_refresh(
     current_request_id: Option<Uuid>,
     request_id: Uuid,
-    completion: CodexRefreshCompletion,
     keys: Option<&mut warp_multi_agent_api::request::settings::ApiKeys>,
     tokens: Option<&::ai::api_keys::CodexTokens>,
 ) -> CodexRefreshAction {
@@ -716,20 +707,10 @@ impl ResponseStream {
                 if let Some(refresh_rx) = refresh_rx {
                     let _ = ctx.spawn(
                         async move { refresh_rx.with_timeout(CODEX_REFRESH_REQUEST_TIMEOUT).await },
-                        move |me, result, ctx| {
-                            let completion = match result {
-                                Ok(Ok(CodexRefreshOutcome::Refreshed)) => {
-                                    CodexRefreshCompletion::Refreshed
-                                }
-                                Ok(Ok(CodexRefreshOutcome::Failed)) | Ok(Err(_)) => {
-                                    CodexRefreshCompletion::Failed
-                                }
-                                Err(_) => CodexRefreshCompletion::TimedOut,
-                            };
+                        move |me, _result, ctx| {
                             let action = complete_codex_refresh(
                                 me.current_request_id,
                                 request_id,
-                                completion,
                                 me.params.api_keys.as_mut(),
                                 ApiKeyManager::as_ref(ctx).codex_tokens(),
                             );

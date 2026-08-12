@@ -2808,9 +2808,9 @@ impl AISettingsPageView {
     fn start_codex_oauth(&mut self, ctx: &mut ViewContext<Self>) {
         use warp_core::safe_error;
 
+        use crate::ToastStack;
         use crate::view_components::{DismissibleToast, ToastLink};
         use crate::workspace::WorkspaceAction;
-        use crate::ToastStack;
 
         let visibility = CustomInferenceVisibility::compute(ctx);
         if !should_render_codex_subscription(visibility.show_provider_keys)

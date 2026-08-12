@@ -7,13 +7,13 @@
 
 use std::io::{ErrorKind, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use anyhow::{bail, Context as _};
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use anyhow::{Context as _, bail};
 use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 // `std::time::Instant` is disallowed because it is unavailable on wasm.
 use instant::Instant;
 use rand::RngCore as _;

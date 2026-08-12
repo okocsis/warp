@@ -888,11 +888,13 @@ fn pasted_openai_key_takes_precedence_over_codex_credentials() {
     assert!(keys.codex_oauth_credentials.is_none());
 
     manager.keys.openai = Some("   ".into());
-    assert!(manager
-        .api_keys_for_request(true, false, None)
-        .unwrap()
-        .codex_oauth_credentials
-        .is_some());
+    assert!(
+        manager
+            .api_keys_for_request(true, false, None)
+            .unwrap()
+            .codex_oauth_credentials
+            .is_some()
+    );
 }
 
 #[test]
@@ -1358,12 +1360,14 @@ fn codex_single_flight_joins_and_wakes_all_waiters() {
         2
     );
 
-    assert!(finish_codex_refresh(
-        &mut manager,
-        "codex-refresh",
-        CodexRefreshOutcome::Refreshed,
-    )
-    .is_none());
+    assert!(
+        finish_codex_refresh(
+            &mut manager,
+            "codex-refresh",
+            CodexRefreshOutcome::Refreshed,
+        )
+        .is_none()
+    );
     assert!(manager.codex_refresh_state.is_none());
     assert_eq!(
         warpui_core::r#async::block_on(first_receiver).unwrap(),

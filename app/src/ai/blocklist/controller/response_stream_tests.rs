@@ -2,20 +2,18 @@ use std::time::{Duration, SystemTime};
 
 use ::ai::api_keys::CodexTokens;
 use uuid::Uuid;
-use warp_multi_agent_api::request::settings::api_keys::CodexOauthCredentials;
 use warp_multi_agent_api::request::settings::ApiKeys;
-
-use super::{
-    complete_codex_refresh, recovery_action, should_refresh_codex_request, CodexRefreshAction,
-    RecoveryAction,
-};
+use warp_multi_agent_api::request::settings::api_keys::CodexOauthCredentials;
 
 #[cfg(not(target_family = "wasm"))]
 use std::time::Duration;
 
 #[cfg(not(target_family = "wasm"))]
 use super::apply_geap_refresh_to_params;
-use super::{FailReason, MAX_RECOVERY_ATTEMPTS, RecoveryAction, RecoveryBudget, recovery_action};
+use super::{
+	FailReason, MAX_RECOVERY_ATTEMPTS, RecoveryAction, RecoveryBudget, recovery_action,
+	CodexRefreshAction, complete_codex_refresh, should_refresh_codex_request,
+};
 #[cfg(not(target_family = "wasm"))]
 use super::{ResponseStream, ResponseStreamId};
 #[cfg(not(target_family = "wasm"))]
@@ -190,6 +188,7 @@ fn codex_refresh_replaces_only_nested_credentials() {
             chatgpt_account_id: "fresh-account".into(),
         })
     );
+}
 
 #[test]
 fn resume_failures_consume_the_shared_budget() {

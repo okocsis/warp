@@ -132,7 +132,6 @@ fn make_manager_with_grok(keys: ApiKeys, grok_tokens: Option<GrokTokens>) -> Api
         codex_refresh_allowed: false,
         #[cfg(not(target_family = "wasm"))]
         codex_refresh_state: None,
-        codex_refresh_waiters: None,
         #[cfg(not(target_family = "wasm"))]
         geap_refresh_waiters: None,
         #[cfg(not(target_family = "wasm"))]

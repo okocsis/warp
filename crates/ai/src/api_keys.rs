@@ -601,7 +601,6 @@ pub struct ApiKeyManager {
     /// current token is parked rather than joining the active token's outcome.
     #[cfg(not(target_family = "wasm"))]
     pub(crate) codex_refresh_state: Option<CodexRefreshFlight>,
-    pub(crate) codex_refresh_waiters: Option<Vec<oneshot::Sender<CodexRefreshOutcome>>>,
     /// Coordinates request-time GEAP refreshes. Installed by the mint kickoff
     /// itself (see `install_geap_refresh_waiter`) immediately before the state
     /// transitions to `Refreshing`, and taken when the mint completes, so
@@ -697,7 +696,6 @@ impl ApiKeyManager {
             codex_refresh_allowed: false,
             #[cfg(not(target_family = "wasm"))]
             codex_refresh_state: None,
-            codex_refresh_waiters: None,
             geap_refresh_waiters: None,
             #[cfg(not(target_family = "wasm"))]
             geap_last_mint_failure: None,
@@ -1467,13 +1465,13 @@ impl ApiKeyManager {
                     .write_value(CODEX_SECURE_STORAGE_KEY, json),
                 None => ctx.secure_storage().remove_value(CODEX_SECURE_STORAGE_KEY),
             };
-            if let Err(error) = result {
-                if !matches!(error, secure_storage::Error::NotFound) {
-                    report_error!(
-                        anyhow::Error::new(error)
-                            .context("Failed to persist Codex tokens to secure storage")
-                    );
-                }
+            if let Err(error) = result
+                && !matches!(error, secure_storage::Error::NotFound)
+            {
+                report_error!(
+                    anyhow::Error::new(error)
+                        .context("Failed to persist Codex tokens to secure storage")
+                );
             }
         });
     }

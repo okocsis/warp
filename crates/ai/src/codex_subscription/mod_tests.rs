@@ -1,5 +1,5 @@
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use warpui_core::App;
 
 use super::*;
@@ -229,12 +229,10 @@ fn replacement_token_waiters_are_dispatched_after_stale_flight_finishes() {
                     .map(|flight| flight.refresh_token.as_str()),
                 Some("current-refresh")
             );
-            assert!(finish_codex_refresh(
-                manager,
-                "current-refresh",
-                CodexRefreshOutcome::Refreshed,
-            )
-            .is_none());
+            assert!(
+                finish_codex_refresh(manager, "current-refresh", CodexRefreshOutcome::Refreshed,)
+                    .is_none()
+            );
         });
         assert_eq!(
             current_receiver.await.unwrap(),

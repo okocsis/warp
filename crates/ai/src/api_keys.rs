@@ -952,6 +952,10 @@ impl ApiKeyManager {
 
     pub fn set_open_router_key(&mut self, key: Option<String>, ctx: &mut ModelContext<Self>) {
         self.keys.open_router = key;
+        ctx.emit(ApiKeyManagerEvent::KeysUpdated);
+        self.write_keys_to_secure_storage(ctx);
+    }
+
     pub fn set_provider_key(
         &mut self,
         provider: LLMProvider,
@@ -1419,8 +1423,10 @@ impl ApiKeyManager {
             Ok(json) => json,
             Err(error) => {
                 if !matches!(error, secure_storage::Error::NotFound) {
-                    report_error!(anyhow::Error::new(error)
-                        .context("Failed to read Codex tokens from secure storage"));
+                    report_error!(
+                        anyhow::Error::new(error)
+                            .context("Failed to read Codex tokens from secure storage")
+                    );
                 }
                 return None;
             }
@@ -1441,7 +1447,9 @@ impl ApiKeyManager {
         let payload = match self.codex_tokens.as_ref().map(serde_json::to_string) {
             Some(Ok(json)) => Some(json),
             Some(Err(error)) => {
-                report_error!(anyhow::Error::new(error).context("Failed to serialize Codex tokens"));
+                report_error!(
+                    anyhow::Error::new(error).context("Failed to serialize Codex tokens")
+                );
                 return;
             }
             None => None,
@@ -1461,8 +1469,10 @@ impl ApiKeyManager {
             };
             if let Err(error) = result {
                 if !matches!(error, secure_storage::Error::NotFound) {
-                    report_error!(anyhow::Error::new(error)
-                        .context("Failed to persist Codex tokens to secure storage"));
+                    report_error!(
+                        anyhow::Error::new(error)
+                            .context("Failed to persist Codex tokens to secure storage")
+                    );
                 }
             }
         });

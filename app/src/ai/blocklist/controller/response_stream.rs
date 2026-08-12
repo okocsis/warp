@@ -616,7 +616,9 @@ impl ResponseStream {
         // Subscription OAuth refresh is native-only.
         #[cfg(not(target_family = "wasm"))]
         {
-            use ::ai::api_keys::{ApiKeyManager, GeapRefreshOutcome, GrokRefreshOutcome, CodexRefreshOutcome};
+            use ::ai::api_keys::{
+                ApiKeyManager, CodexRefreshOutcome, GeapRefreshOutcome, GrokRefreshOutcome,
+            };
             use warpui::r#async::FutureExt as _;
 
             use crate::ai::llms::{LLMModelHost, LLMPreferences, LLMProvider};
@@ -726,6 +728,12 @@ impl ResponseStream {
                                 }
                                 CodexRefreshAction::Drop => {}
                             }
+                        },
+                    );
+                    return;
+                }
+            }
+
             let uses_geap = LLMPreferences::as_ref(ctx)
                 .get_llm_info(&params.model, ctx)
                 .is_some_and(|info| {

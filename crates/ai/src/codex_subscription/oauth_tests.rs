@@ -155,9 +155,11 @@ fn token_exchange_posts_form_to_local_server() {
 
     let request = request_rx.recv().unwrap();
     assert!(request.starts_with("POST /oauth/token HTTP/1.1\r\n"));
-    assert!(request
-        .to_ascii_lowercase()
-        .contains("content-type: application/x-www-form-urlencoded"));
+    assert!(
+        request
+            .to_ascii_lowercase()
+            .contains("content-type: application/x-www-form-urlencoded")
+    );
     let body = request.split_once("\r\n\r\n").unwrap().1;
     let form: HashMap<String, String> = serde_urlencoded::from_str(body).unwrap();
     assert_eq!(
@@ -187,9 +189,11 @@ fn refresh_posts_json_while_authorization_exchange_remains_form_encoded() {
     assert_eq!(tokens.expires_in, None);
 
     let request = request_rx.recv().unwrap();
-    assert!(request
-        .to_ascii_lowercase()
-        .contains("content-type: application/json"));
+    assert!(
+        request
+            .to_ascii_lowercase()
+            .contains("content-type: application/json")
+    );
     let body = request.split_once("\r\n\r\n").unwrap().1;
     let json: Value = serde_json::from_str(body).unwrap();
     assert_eq!(json["client_id"], CLIENT_ID);
@@ -269,10 +273,12 @@ fn rejects_id_token_without_account_claim() {
     let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"none"}"#);
     let payload = URL_SAFE_NO_PAD.encode(br#"{"sub":"user"}"#);
     let token = format!("{header}.{payload}.signature");
-    assert!(chatgpt_account_id_from_id_token(&token)
-        .unwrap_err()
-        .to_string()
-        .contains("chatgpt_account_id"));
+    assert!(
+        chatgpt_account_id_from_id_token(&token)
+            .unwrap_err()
+            .to_string()
+            .contains("chatgpt_account_id")
+    );
 }
 
 fn invoke_callback(

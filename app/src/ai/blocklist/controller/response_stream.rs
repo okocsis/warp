@@ -616,9 +616,7 @@ impl ResponseStream {
         // Subscription OAuth refresh is native-only.
         #[cfg(not(target_family = "wasm"))]
         {
-            use ::ai::api_keys::{
-                ApiKeyManager, CodexRefreshOutcome, GeapRefreshOutcome, GrokRefreshOutcome,
-            };
+            use ::ai::api_keys::{ApiKeyManager, GeapRefreshOutcome, GrokRefreshOutcome};
             use warpui::r#async::FutureExt as _;
 
             use crate::ai::llms::{LLMModelHost, LLMPreferences, LLMProvider};

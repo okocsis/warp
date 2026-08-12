@@ -10,19 +10,19 @@ use ai::api_keys::ApiKeyManager;
 #[cfg(not(target_family = "wasm"))]
 use ai::codex_subscription::oauth::TokenResponse;
 #[cfg(not(target_family = "wasm"))]
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-#[cfg(not(target_family = "wasm"))]
 use base64::Engine as _;
+#[cfg(not(target_family = "wasm"))]
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use warp_core::features::FeatureFlag;
 #[cfg(not(target_family = "wasm"))]
 use warpui::App;
 
+use super::{
+    API_KEYS_SEARCH_TERMS, AgentAttributionToggleState, derive_agent_attribution_toggle_state,
+    should_render_codex_subscription, subscription_controls_enabled,
+};
 #[cfg(not(target_family = "wasm"))]
 use super::{codex_oauth_attempt_is_current, take_codex_tokens_for_disconnect};
-use super::{
-    derive_agent_attribution_toggle_state, should_render_codex_subscription,
-    subscription_controls_enabled, AgentAttributionToggleState, API_KEYS_SEARCH_TERMS,
-};
 use crate::workspaces::workspace::AdminEnablementSetting;
 
 #[test]

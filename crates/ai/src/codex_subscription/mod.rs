@@ -9,10 +9,10 @@ use anyhow::Context as _;
 use futures::channel::oneshot;
 use warp_core::features::FeatureFlag;
 use warp_errors::report_error;
-use warpui_core::r#async::Timer;
 use warpui_core::ModelContext;
+use warpui_core::r#async::Timer;
 
-use self::oauth::{chatgpt_account_id_from_id_token, TokenResponse};
+use self::oauth::{TokenResponse, chatgpt_account_id_from_id_token};
 use crate::api_keys::{
     ApiKeyManager, CodexRefreshFlight, CodexRefreshOutcome, CodexTokens, PendingCodexRefresh,
 };

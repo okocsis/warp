@@ -2,6 +2,20 @@ use super::{
     AgentAttributionToggleState, GrokSubscriptionButtonAction,
     derive_agent_attribution_toggle_state, grok_subscription_button_action,
 };
+#[cfg(not(target_family = "wasm"))]
+use super::{chatgpt_oauth_attempt_is_current, take_chatgpt_tokens_for_disconnect};
+#[cfg(not(target_family = "wasm"))]
+use ai::api_keys::ApiKeyManager;
+#[cfg(not(target_family = "wasm"))]
+use ai::codex_subscription::oauth::TokenResponse;
+#[cfg(not(target_family = "wasm"))]
+use base64::Engine as _;
+#[cfg(not(target_family = "wasm"))]
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+#[cfg(not(target_family = "wasm"))]
+use uuid::Uuid;
+#[cfg(not(target_family = "wasm"))]
+use warpui::App;
 
 use crate::workspaces::workspace::AdminEnablementSetting;
 
@@ -123,4 +137,56 @@ fn grok_button_action_reflects_tokens_and_attempt_phase() {
         grok_subscription_button_action(true, Some(true)),
         GrokSubscriptionButtonAction::Disconnect
     );
+}
+
+#[cfg(not(target_family = "wasm"))]
+#[test]
+fn stale_chatgpt_oauth_attempts_cannot_complete() {
+    let active_id = Uuid::new_v4();
+
+    assert!(chatgpt_oauth_attempt_is_current(Some(active_id), active_id));
+    assert!(!chatgpt_oauth_attempt_is_current(None, active_id));
+    assert!(!chatgpt_oauth_attempt_is_current(
+        Some(Uuid::new_v4()),
+        active_id
+    ));
+}
+
+#[cfg(not(target_family = "wasm"))]
+#[test]
+fn chatgpt_disconnect_clears_tokens_before_revocation() {
+    App::test((), |mut app| async move {
+        app.update(|ctx| {
+            warpui_extras::secure_storage::register_noop("test", ctx);
+        });
+        let manager = app.add_singleton_model(ApiKeyManager::new);
+        let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"none"}"#);
+        let payload = URL_SAFE_NO_PAD
+            .encode(br#"{"https://api.openai.com/auth":{"chatgpt_account_id":"account-123"}}"#);
+        let id_token = format!("{header}.{payload}.signature");
+
+        manager.update(&mut app, |manager, ctx| {
+            manager
+                .store_codex_tokens(
+                    TokenResponse {
+                        id_token: Some(id_token),
+                        access_token: "access-token".into(),
+                        refresh_token: Some("refresh-token".into()),
+                        expires_in: Some(3600),
+                    },
+                    ctx,
+                )
+                .unwrap();
+        });
+
+        let revocation = manager
+            .update(&mut app, take_chatgpt_tokens_for_disconnect)
+            .expect("tokens available for revocation");
+
+        assert_eq!(revocation.access_token.as_deref(), Some("access-token"));
+        assert_eq!(revocation.refresh_token.as_deref(), Some("refresh-token"));
+        manager.read(&app, |manager, _| {
+            assert!(manager.codex_tokens().is_none());
+        });
+    });
 }

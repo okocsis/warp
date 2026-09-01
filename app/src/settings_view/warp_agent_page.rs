@@ -5043,14 +5043,6 @@ pub(crate) fn chatgpt_subscription_button_action(
     }
 }
 
-fn subscription_controls_enabled(
-    is_any_ai_enabled: bool,
-    is_byo_enabled: bool,
-    member_byo_keys_allowed: bool,
-) -> bool {
-    is_any_ai_enabled && is_byo_enabled && member_byo_keys_allowed
-}
-
 fn should_render_chatgpt_subscription(
     codex_subscription_enabled: bool,
     show_provider_keys: bool,
@@ -5281,11 +5273,7 @@ impl ApiKeysWidget {
         ] {
             button.update(ctx, |button, ctx| {
                 button.set_disabled(
-                    !subscription_controls_enabled(
-                        is_any_ai_enabled,
-                        is_byo_enabled,
-                        member_byo_keys_allowed,
-                    ),
+                    !(is_any_ai_enabled && is_byo_enabled && member_byo_keys_allowed),
                     ctx,
                 );
             });
@@ -5307,11 +5295,7 @@ impl ApiKeysWidget {
                 for button in &subscription_buttons {
                     button.update(ctx, |button, ctx| {
                         button.set_disabled(
-                            !subscription_controls_enabled(
-                                is_any_ai_enabled,
-                                is_byo_enabled,
-                                member_byo_keys_allowed,
-                            ),
+                            !(is_any_ai_enabled && is_byo_enabled && member_byo_keys_allowed),
                             ctx,
                         );
                     });
@@ -5335,11 +5319,7 @@ impl ApiKeysWidget {
                 for button in &subscription_buttons {
                     button.update(ctx, |button, ctx| {
                         button.set_disabled(
-                            !subscription_controls_enabled(
-                                is_any_ai_enabled,
-                                is_byo_enabled,
-                                member_byo_keys_allowed,
-                            ),
+                            !(is_any_ai_enabled && is_byo_enabled && member_byo_keys_allowed),
                             ctx,
                         );
                     });

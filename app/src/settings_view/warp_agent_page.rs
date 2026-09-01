@@ -5021,6 +5021,43 @@ pub(crate) fn grok_subscription_button_action(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ChatGptSubscriptionButtonAction {
+    Connect,
+    Cancel,
+    Cancelling,
+    Disconnect,
+}
+
+pub(crate) fn chatgpt_subscription_button_action(
+    has_valid_credentials: bool,
+    oauth_phase: Option<bool>,
+) -> ChatGptSubscriptionButtonAction {
+    if has_valid_credentials {
+        return ChatGptSubscriptionButtonAction::Disconnect;
+    }
+    match oauth_phase {
+        Some(true) => ChatGptSubscriptionButtonAction::Cancelling,
+        Some(false) => ChatGptSubscriptionButtonAction::Cancel,
+        None => ChatGptSubscriptionButtonAction::Connect,
+    }
+}
+
+fn subscription_controls_enabled(
+    is_any_ai_enabled: bool,
+    is_byo_enabled: bool,
+    member_byo_keys_allowed: bool,
+) -> bool {
+    is_any_ai_enabled && is_byo_enabled && member_byo_keys_allowed
+}
+
+fn should_render_chatgpt_subscription(
+    codex_subscription_enabled: bool,
+    show_provider_keys: bool,
+) -> bool {
+    codex_subscription_enabled && show_provider_keys
+}
+
 struct ProviderApiKeyEditor {
     provider: LLMProvider,
     editor: ViewHandle<EditorView>,
@@ -5036,6 +5073,10 @@ struct ApiKeysWidget {
     grok_cancel_button: ViewHandle<ActionButton>,
     grok_cancelling_button: ViewHandle<ActionButton>,
     grok_disconnect_button: ViewHandle<ActionButton>,
+    chatgpt_connect_button: ViewHandle<ActionButton>,
+    chatgpt_cancel_button: ViewHandle<ActionButton>,
+    chatgpt_cancelling_button: ViewHandle<ActionButton>,
+    chatgpt_disconnect_button: ViewHandle<ActionButton>,
 
     can_use_warp_credits_for_fallback: SwitchStateHandle,
     upgrade_highlight_index: HighlightedHyperlink,
@@ -5203,27 +5244,102 @@ impl ApiKeysWidget {
                     ctx.dispatch_typed_action(WarpAgentPageAction::DisconnectGrokSubscription);
                 })
         });
-        for button in [&grok_connect_button, &grok_disconnect_button] {
+        let chatgpt_connect_button = ctx.add_typed_action_view(|_| {
+            ActionButton::new("Connect", SecondaryTheme)
+                .with_size(ButtonSize::Small)
+                .on_click(|ctx| {
+                    ctx.dispatch_typed_action(WarpAgentPageAction::ConnectChatGptSubscription);
+                })
+        });
+        let chatgpt_cancel_button = ctx.add_typed_action_view(|_| {
+            ActionButton::new("Cancel", SecondaryTheme)
+                .with_size(ButtonSize::Small)
+                .on_click(|ctx| {
+                    ctx.dispatch_typed_action(
+                        WarpAgentPageAction::CancelChatGptSubscriptionConnect,
+                    );
+                })
+        });
+        let chatgpt_cancelling_button = ctx.add_typed_action_view(|_| {
+            ActionButton::new("Cancelling…", SecondaryTheme).with_size(ButtonSize::Small)
+        });
+        chatgpt_cancelling_button.update(ctx, |button, ctx| {
+            button.set_disabled(true, ctx);
+        });
+        let chatgpt_disconnect_button = ctx.add_typed_action_view(|_| {
+            ActionButton::new("Disconnect", DangerSecondaryTheme)
+                .with_size(ButtonSize::Small)
+                .on_click(|ctx| {
+                    ctx.dispatch_typed_action(WarpAgentPageAction::DisconnectChatGptSubscription);
+                })
+        });
+        for button in [
+            &grok_connect_button,
+            &grok_disconnect_button,
+            &chatgpt_connect_button,
+            &chatgpt_disconnect_button,
+        ] {
             button.update(ctx, |button, ctx| {
                 button.set_disabled(
-                    !(is_any_ai_enabled && is_byo_enabled && member_byo_keys_allowed),
+                    !subscription_controls_enabled(
+                        is_any_ai_enabled,
+                        is_byo_enabled,
+                        member_byo_keys_allowed,
+                    ),
                     ctx,
                 );
             });
         }
 
-        // The Grok subscription is BYO auth, so keep the buttons' enablement
+        // Subscription OAuth is BYO auth, so keep the buttons' enablement
         // in sync with the BYO API key policy, like the editors above.
-        let grok_buttons = [grok_connect_button.clone(), grok_disconnect_button.clone()];
+        let subscription_buttons = [
+            grok_connect_button.clone(),
+            grok_disconnect_button.clone(),
+            chatgpt_connect_button.clone(),
+            chatgpt_disconnect_button.clone(),
+        ];
         ctx.subscribe_to_model(&workspace_handle, move |_, workspace, event, ctx| {
             if is_team_policy_change_for_window(event, ctx.window_id()) {
                 let is_any_ai_enabled = AISettings::handle(ctx).as_ref(ctx).is_any_ai_enabled(ctx);
                 let is_byo_enabled = workspace.as_ref(ctx).is_byo_api_key_enabled(ctx);
                 let member_byo_keys_allowed = member_byo_keys_allowed_for_view(ctx);
-                for button in &grok_buttons {
+                for button in &subscription_buttons {
                     button.update(ctx, |button, ctx| {
                         button.set_disabled(
-                            !(is_any_ai_enabled && is_byo_enabled && member_byo_keys_allowed),
+                            !subscription_controls_enabled(
+                                is_any_ai_enabled,
+                                is_byo_enabled,
+                                member_byo_keys_allowed,
+                            ),
+                            ctx,
+                        );
+                    });
+                }
+                ctx.notify();
+            }
+        });
+
+        let subscription_buttons = [
+            grok_connect_button.clone(),
+            grok_disconnect_button.clone(),
+            chatgpt_connect_button.clone(),
+            chatgpt_disconnect_button.clone(),
+        ];
+        ctx.subscribe_to_model(&AISettings::handle(ctx), move |_, settings, event, ctx| {
+            if matches!(event, AISettingsChangedEvent::IsAnyAIEnabled { .. }) {
+                let is_any_ai_enabled = settings.as_ref(ctx).is_any_ai_enabled(ctx);
+                let workspaces = UserWorkspaces::as_ref(ctx);
+                let is_byo_enabled = workspaces.is_byo_api_key_enabled(ctx);
+                let member_byo_keys_allowed = member_byo_keys_allowed_for_view(ctx);
+                for button in &subscription_buttons {
+                    button.update(ctx, |button, ctx| {
+                        button.set_disabled(
+                            !subscription_controls_enabled(
+                                is_any_ai_enabled,
+                                is_byo_enabled,
+                                member_byo_keys_allowed,
+                            ),
                             ctx,
                         );
                     });
@@ -5241,6 +5357,7 @@ impl ApiKeysWidget {
                 && !member_byo_keys_allowed_for_view(ctx)
             {
                 me.cancel_grok_oauth(ctx);
+                me.cancel_chatgpt_oauth(ctx);
             }
         });
 
@@ -5260,6 +5377,10 @@ impl ApiKeysWidget {
             grok_cancel_button,
             grok_cancelling_button,
             grok_disconnect_button,
+            chatgpt_connect_button,
+            chatgpt_cancel_button,
+            chatgpt_cancelling_button,
+            chatgpt_disconnect_button,
 
             can_use_warp_credits_for_fallback: Default::default(),
             upgrade_highlight_index: Default::default(),
@@ -5640,6 +5761,111 @@ impl ApiKeysWidget {
         column.finish()
     }
 
+    fn render_chatgpt_subscription_row(
+        &self,
+        appearance: &Appearance,
+        is_enabled: bool,
+        oauth_phase: Option<bool>,
+        app: &AppContext,
+    ) -> Box<dyn Element> {
+        let key_manager = ApiKeyManager::as_ref(app);
+        let valid_tokens = key_manager
+            .has_codex_subscription()
+            .then(|| key_manager.codex_tokens())
+            .flatten();
+
+        let text_color = styles::header_font_color(is_enabled, app);
+        let label = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_spacing(4.)
+            .with_child(
+                Text::new_inline("Use your", appearance.ui_font_family(), CONTENT_FONT_SIZE)
+                    .with_color(text_color.into())
+                    .finish(),
+            )
+            .with_child(
+                ConstrainedBox::new(Icon::OpenAILogo.to_warpui_icon(text_color).finish())
+                    .with_width(14.)
+                    .with_height(14.)
+                    .finish(),
+            )
+            .with_child(
+                Text::new_inline(
+                    "ChatGPT subscription",
+                    appearance.ui_font_family(),
+                    CONTENT_FONT_SIZE,
+                )
+                .with_color(text_color.into())
+                .finish(),
+            )
+            .finish();
+
+        let button = match chatgpt_subscription_button_action(valid_tokens.is_some(), oauth_phase) {
+            ChatGptSubscriptionButtonAction::Connect => &self.chatgpt_connect_button,
+            ChatGptSubscriptionButtonAction::Cancel => &self.chatgpt_cancel_button,
+            ChatGptSubscriptionButtonAction::Cancelling => &self.chatgpt_cancelling_button,
+            ChatGptSubscriptionButtonAction::Disconnect => &self.chatgpt_disconnect_button,
+        };
+        let header_row = Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_child(Shrinkable::new(1., label).finish())
+            .with_child(button.as_ref(app).render(app))
+            .finish();
+        let description = Container::new(
+            Text::new(
+                "Connect your ChatGPT subscription to use supported OpenAI models in Warp Agent.",
+                appearance.ui_font_family(),
+                CONTENT_FONT_SIZE,
+            )
+            .with_color(styles::description_font_color(is_enabled, app).into())
+            .soft_wrap(true)
+            .finish(),
+        )
+        .with_margin_right(styles::TOGGLE_WIDTH_MARGIN)
+        .finish();
+        let mut column = Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::Start)
+            .with_child(header_row)
+            .with_child(description);
+
+        if let Some(tokens) = valid_tokens {
+            let connected_text = match tokens.connected_at.map(DateTime::<Local>::from) {
+                Some(connected_at) => format!(
+                    "Connected on {}.",
+                    connected_at.format("%m/%d/%Y at %-I:%M%P")
+                ),
+                None => "Connected.".to_string(),
+            };
+            let check = ConstrainedBox::new(
+                Icon::Check
+                    .to_warpui_icon(appearance.theme().ansi_fg_green().into())
+                    .finish(),
+            )
+            .with_width(12.)
+            .with_height(12.)
+            .finish();
+            let status_text = Text::new_inline(
+                connected_text,
+                appearance.ui_font_family(),
+                CONTENT_FONT_SIZE,
+            )
+            .with_color(styles::description_font_color(is_enabled, app).into())
+            .finish();
+            column.add_child(
+                Flex::row()
+                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                    .with_spacing(4.)
+                    .with_child(check)
+                    .with_child(status_text)
+                    .finish(),
+            );
+        }
+
+        column.finish()
+    }
+
     /// Paste-the-code fallback for the current SuperGrok connect attempt.
     #[cfg(not(target_family = "wasm"))]
     fn render_grok_manual_code_entry(
@@ -5762,7 +5988,7 @@ impl SettingsWidget for ApiKeysWidget {
     type View = WarpAgentPageView;
 
     fn search_terms(&self) -> &str {
-        "api keys bring your own byo openai anthropic google claude gemini gpt custom inference endpoint grok supergrok xai subscription"
+        "api keys bring your own byo openai anthropic google claude gemini gpt custom inference endpoint grok supergrok xai subscription chatgpt oauth"
     }
 
     fn should_render(&self, app: &AppContext) -> bool {
@@ -5881,6 +6107,29 @@ impl SettingsWidget for ApiKeysWidget {
                         .finish(),
                 );
             }
+        }
+
+        if should_render_chatgpt_subscription(
+            FeatureFlag::CodexSubscription.is_enabled(),
+            show_provider_keys,
+        ) {
+            #[cfg(not(target_family = "wasm"))]
+            let chatgpt_oauth_phase = view
+                .chatgpt_oauth_attempt
+                .as_ref()
+                .map(|attempt| attempt.cancelling);
+            #[cfg(target_family = "wasm")]
+            let chatgpt_oauth_phase: Option<bool> = None;
+            column.add_child(
+                Container::new(self.render_chatgpt_subscription_row(
+                    appearance,
+                    provider_keys_enabled,
+                    chatgpt_oauth_phase,
+                    app,
+                ))
+                .with_margin_top(16.)
+                .finish(),
+            );
         }
 
         // Warp credit fallback applies to member-provided API keys, not custom endpoints.

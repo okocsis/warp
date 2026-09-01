@@ -349,7 +349,7 @@ version-compare = "0.1"
 vte = { git = "https://github.com/warpdotdev/vte.git", rev = "4b399c87b63ba88f45709edaa6383fc519f6c900", default-features = false }
 walkdir = "2"
 warp-workflows = { git = "https://github.com/warpdotdev/workflows", rev = "793a98ddda6ef19682aed66364faebd2829f0e01" }
-warp_multi_agent_api = { git = "https://github.com/okocsis/warp-proto-apis.git", rev = "25f230108c143253cf4bf6b553b251ac64a6a188" }
+warp_multi_agent_api = { git = "https://github.com/okocsis/warp-proto-apis.git", rev = "3507b1ac1b9be60fa5f8f8a7c0e570951d01a2d0" }
 wasm-bindgen = "0.2.89"
 wasm-bindgen-futures = "0.4.42"
 web-sys = { version = "0.3.69", features = [

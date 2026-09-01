@@ -181,18 +181,14 @@ fn complete_codex_refresh(
     if current_request_id != Some(request_id) {
         return CodexRefreshAction::Drop;
     }
-    match completion {
-        CodexRefreshCompletion::Refreshed
-            if keys
-                .zip(tokens)
-                .is_some_and(|(keys, tokens)| replace_codex_oauth_credentials(keys, tokens)) =>
-        {
-            CodexRefreshAction::Send
-        }
-        CodexRefreshCompletion::Refreshed
-        | CodexRefreshCompletion::Failed
-        | CodexRefreshCompletion::TimedOut => CodexRefreshAction::Fail,
-	}
+    if tokens.is_some_and(|tokens| !tokens.is_expired())
+        && keys
+            .zip(tokens)
+            .is_some_and(|(keys, tokens)| replace_codex_oauth_credentials(keys, tokens))
+    {
+        return CodexRefreshAction::Send;
+    }
+    CodexRefreshAction::Fail
 }
 
 /// What to do about a failed or truncated MAA response attempt.
@@ -686,7 +682,7 @@ impl ResponseStream {
             // refresh when this is an OpenAI request whose prepared credentials
             // selected an available Codex subscription.
             let is_openai_request = LLMPreferences::as_ref(ctx)
-                .get_llm_info(&params.model)
+                .get_llm_info(&params.model, ctx)
                 .is_some_and(|info| info.provider == LLMProvider::OpenAI);
             let has_codex_subscription = ApiKeyManager::as_ref(ctx).has_codex_subscription();
             let has_selected_codex_credentials = params
@@ -718,6 +714,7 @@ impl ResponseStream {
                                 CodexRefreshAction::Send => Self::spawn_generate(
                                     request_id,
                                     me.params.clone(),
+                                    team_scope,
                                     cancellation_rx,
                                     ctx,
                                 ),
@@ -816,7 +813,11 @@ impl ResponseStream {
     fn surface_codex_refresh_failure(&mut self, request_id: Uuid, ctx: &mut ModelContext<Self>) {
         let error = Arc::new(AIApiError::CodexSubscriptionTokenRefreshFailed);
         self.error_event_emitted = true;
-        self.report_request_failure(&error, NetworkStatus::as_ref(ctx).is_online());
+        self.report_request_failure(
+            &error,
+            NetworkStatus::as_ref(ctx).is_online(),
+            self.recovery.attempts_used(),
+        );
         ctx.emit(ResponseStreamEvent::ReceivedEvent(Consumable::new(Err(
             error,
         ))));

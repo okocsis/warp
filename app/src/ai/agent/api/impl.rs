@@ -108,6 +108,7 @@ pub async fn generate_multi_agent_output(
                 && FeatureFlag::CloudAgentRunners.is_enabled(),
             supports_background_computer_use: FeatureFlag::BackgroundComputerUse.is_enabled()
                 && computer_use::background_supported(),
+            supports_stored_screenshots: false,
             custom_model_providers: params.custom_model_providers,
             custom_model_routers: params.custom_model_routers,
         }),

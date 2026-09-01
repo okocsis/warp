@@ -15,7 +15,6 @@ use super::{
     AgentAttributionToggleState, ChatGptSubscriptionButtonAction, GrokSubscriptionButtonAction,
     chatgpt_subscription_button_action, derive_agent_attribution_toggle_state,
     grok_subscription_button_action, should_render_chatgpt_subscription,
-    subscription_controls_enabled,
 };
 #[cfg(not(target_family = "wasm"))]
 use super::{chatgpt_oauth_attempt_is_current, take_chatgpt_tokens_for_disconnect};
@@ -170,14 +169,6 @@ fn chatgpt_subscription_visibility_requires_feature_and_provider_keys() {
     assert!(should_render_chatgpt_subscription(true, true));
     assert!(!should_render_chatgpt_subscription(false, true));
     assert!(!should_render_chatgpt_subscription(true, false));
-}
-
-#[test]
-fn subscription_controls_require_ai_byo_and_team_policy() {
-    assert!(subscription_controls_enabled(true, true, true));
-    assert!(!subscription_controls_enabled(false, true, true));
-    assert!(!subscription_controls_enabled(true, false, true));
-    assert!(!subscription_controls_enabled(true, true, false));
 }
 
 #[cfg(not(target_family = "wasm"))]

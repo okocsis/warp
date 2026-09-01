@@ -14,6 +14,8 @@ use std::sync::LazyLock;
 
 use ::ai::api_keys::{ApiKeyManager, ApiKeyManagerEvent, ApiKeys, CustomEndpointParams};
 #[cfg(not(target_family = "wasm"))]
+use ::ai::codex_subscription::oauth as chatgpt_oauth;
+#[cfg(not(target_family = "wasm"))]
 use ::ai::grok_subscription::oauth::{
     self, ManualCodeExchange, OauthCancellationHandle, TokenResponse,
 };
@@ -608,6 +610,17 @@ fn member_byo_keys_allowed_for_view(ctx: &ViewContext<WarpAgentPageView>) -> boo
 #[cfg(not(target_family = "wasm"))]
 const GROK_OAUTH_CONNECT_TOAST_OBJECT_ID: &str = "grok_oauth_connect_toast";
 
+/// Object id shared by the ChatGPT connect-flow toasts, so completion replaces the pending toast.
+#[cfg(not(target_family = "wasm"))]
+const CHATGPT_OAUTH_CONNECT_TOAST_OBJECT_ID: &str = "chatgpt_oauth_connect_toast";
+
+#[cfg(not(target_family = "wasm"))]
+struct ChatGptOauthAttempt {
+    id: Uuid,
+    cancellation: chatgpt_oauth::OauthCancelHandle,
+    cancelling: bool,
+}
+
 /// A SuperGrok connect attempt's terminal outcome, applied once the loopback
 /// listener is confirmed released (see `GrokOauthAttempt::released`) --
 /// that's what makes a subsequent Connect safe to retry.
@@ -675,6 +688,8 @@ pub struct WarpAgentPageView {
     grok_oauth_attempt: Option<GrokOauthAttempt>,
     #[cfg(not(target_family = "wasm"))]
     grok_code_editor: ViewHandle<EditorView>,
+    #[cfg(not(target_family = "wasm"))]
+    chatgpt_oauth_attempt: Option<ChatGptOauthAttempt>,
 }
 
 impl WarpAgentPageView {
@@ -1189,6 +1204,8 @@ impl WarpAgentPageView {
             grok_oauth_attempt: None,
             #[cfg(not(target_family = "wasm"))]
             grok_code_editor,
+            #[cfg(not(target_family = "wasm"))]
+            chatgpt_oauth_attempt: None,
         }
     }
 
@@ -1993,6 +2010,144 @@ impl WarpAgentPageView {
         ctx.notify();
     }
 
+    #[cfg(not(target_family = "wasm"))]
+    fn start_chatgpt_oauth(&mut self, ctx: &mut ViewContext<Self>) {
+        use warp_core::safe_error;
+
+        use crate::ToastStack;
+        use crate::view_components::{DismissibleToast, ToastLink};
+        use crate::workspace::WorkspaceAction;
+
+        let workspaces = UserWorkspaces::as_ref(ctx);
+        if !FeatureFlag::CodexSubscription.is_enabled()
+            || !AISettings::as_ref(ctx).is_any_ai_enabled(ctx)
+            || !workspaces.is_byo_api_key_enabled(ctx)
+            || !member_byo_keys_allowed_for_view(ctx)
+            || self.chatgpt_oauth_attempt.is_some()
+        {
+            return;
+        }
+
+        let attempt = match chatgpt_oauth::OauthAttempt::start() {
+            Ok(attempt) => attempt,
+            Err(err) => {
+                safe_error!(
+                    safe: ("Failed to start ChatGPT OAuth callback server"),
+                    full: ("Failed to start ChatGPT OAuth callback server: {err:#}")
+                );
+                let window_id = ctx.window_id();
+                ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                    toast_stack.add_ephemeral_toast(
+                        DismissibleToast::error(format!("Couldn't start ChatGPT login: {err}")),
+                        window_id,
+                        ctx,
+                    );
+                });
+                return;
+            }
+        };
+
+        let attempt_id = Uuid::new_v4();
+        self.chatgpt_oauth_attempt = Some(ChatGptOauthAttempt {
+            id: attempt_id,
+            cancellation: attempt.cancel_handle(),
+            cancelling: false,
+        });
+        ctx.notify();
+
+        let authorize_url = attempt.authorize_url();
+        ctx.open_url(&authorize_url);
+
+        let window_id = ctx.window_id();
+        ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+            let toast = DismissibleToast::default(
+                "Opening your browser to connect your ChatGPT subscription...".to_string(),
+            )
+            .with_object_id(CHATGPT_OAUTH_CONNECT_TOAST_OBJECT_ID.to_string())
+            .with_link(
+                ToastLink::new("Copy URL".to_string())
+                    .with_onclick_action(WorkspaceAction::CopyTextToClipboard(authorize_url)),
+            );
+            toast_stack.add_persistent_toast(toast, window_id, ctx);
+        });
+
+        ctx.spawn(
+            async move { attempt.finish().await },
+            move |me, result, ctx| {
+                let Some(active) = me.chatgpt_oauth_attempt.as_ref() else {
+                    return;
+                };
+                if !chatgpt_oauth_attempt_is_current(Some(active.id), attempt_id) {
+                    return;
+                }
+                let was_cancelling = active.cancelling;
+                me.chatgpt_oauth_attempt = None;
+
+                let window_id = ctx.window_id();
+                if was_cancelling {
+                    ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                        toast_stack.remove_toast_by_identifier(
+                            CHATGPT_OAUTH_CONNECT_TOAST_OBJECT_ID.to_string(),
+                            window_id,
+                            ctx,
+                        );
+                    });
+                    ctx.notify();
+                    return;
+                }
+
+                let toast = match result {
+                    Ok(tokens) => {
+                        match ApiKeyManager::handle(ctx).update(ctx, move |manager, ctx| {
+                            manager.store_codex_tokens(tokens, ctx)
+                        }) {
+                            Ok(()) => DismissibleToast::success(
+                                "ChatGPT subscription connected".to_string(),
+                            ),
+                            Err(err) => {
+                                safe_error!(
+                                    safe: ("Failed to store ChatGPT OAuth credentials"),
+                                    full: ("Failed to store ChatGPT OAuth credentials: {err:#}")
+                                );
+                                DismissibleToast::error(
+                                    "Couldn't connect ChatGPT. Try again.".to_string(),
+                                )
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        safe_error!(
+                            safe: ("ChatGPT OAuth callback failed"),
+                            full: ("ChatGPT OAuth callback failed: {err:#}")
+                        );
+                        DismissibleToast::error("Couldn't connect ChatGPT. Try again.".to_string())
+                    }
+                };
+                ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                    toast_stack.add_ephemeral_toast(
+                        toast.with_object_id(CHATGPT_OAUTH_CONNECT_TOAST_OBJECT_ID.to_string()),
+                        window_id,
+                        ctx,
+                    );
+                });
+                ctx.notify();
+            },
+        );
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn cancel_chatgpt_oauth(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some(attempt) = self.chatgpt_oauth_attempt.as_mut() else {
+            return;
+        };
+        if attempt.cancelling {
+            return;
+        }
+        attempt.cancelling = true;
+        attempt.cancellation.cancel();
+        ctx.notify();
+    }
+
     /// Exchanges a pasted SuperGrok authorization code using the current
     /// attempt's PKCE verifier.
     #[cfg(not(target_family = "wasm"))]
@@ -2366,6 +2521,9 @@ pub enum WarpAgentPageAction {
     ConnectGrokSubscription,
     CancelGrokSubscriptionConnect,
     DisconnectGrokSubscription,
+    ConnectChatGptSubscription,
+    CancelChatGptSubscriptionConnect,
+    DisconnectChatGptSubscription,
 
     #[cfg(feature = "local_fs")]
     SetConversationLayout(crate::util::file::external_editor::settings::OpenConversationPreference),
@@ -2945,8 +3103,95 @@ impl TypedActionView for WarpAgentPageView {
                 });
                 ctx.notify();
             }
+            WarpAgentPageAction::ConnectChatGptSubscription => {
+                #[cfg(not(target_family = "wasm"))]
+                self.start_chatgpt_oauth(ctx);
+            }
+            WarpAgentPageAction::CancelChatGptSubscriptionConnect => {
+                #[cfg(not(target_family = "wasm"))]
+                self.cancel_chatgpt_oauth(ctx);
+            }
+            WarpAgentPageAction::DisconnectChatGptSubscription => {
+                #[cfg(not(target_family = "wasm"))]
+                {
+                    self.cancel_chatgpt_oauth(ctx);
+                    let tokens = ApiKeyManager::handle(ctx).update(ctx, |manager, ctx| {
+                        take_chatgpt_tokens_for_disconnect(manager, ctx)
+                    });
+                    if let Some(tokens) = tokens {
+                        ctx.spawn(
+                            async move {
+                                if let Some(access_token) = tokens.access_token {
+                                    let _ = chatgpt_oauth::revoke_access_token(&access_token).await;
+                                }
+                                if let Some(refresh_token) = tokens.refresh_token {
+                                    let _ =
+                                        chatgpt_oauth::revoke_refresh_token(&refresh_token).await;
+                                }
+                            },
+                            |_, _, _| {},
+                        );
+                    }
+                }
+                #[cfg(target_family = "wasm")]
+                ApiKeyManager::handle(ctx).update(ctx, |manager, ctx| {
+                    manager.set_codex_tokens(None, ctx);
+                });
+
+                let window_id = ctx.window_id();
+                crate::ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                    toast_stack.add_ephemeral_toast(
+                        crate::view_components::DismissibleToast::default(
+                            "ChatGPT subscription disconnected".to_string(),
+                        ),
+                        window_id,
+                        ctx,
+                    );
+                });
+                ctx.notify();
+            }
         }
     }
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn chatgpt_oauth_attempt_is_current(active_attempt_id: Option<Uuid>, completed_id: Uuid) -> bool {
+    active_attempt_id == Some(completed_id)
+}
+
+#[cfg(not(target_family = "wasm"))]
+impl Drop for WarpAgentPageView {
+    fn drop(&mut self) {
+        if let Some(attempt) = self.chatgpt_oauth_attempt.take() {
+            attempt.cancellation.cancel();
+        }
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+struct ChatGptRevocationTokens {
+    access_token: Option<String>,
+    refresh_token: Option<String>,
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn take_chatgpt_tokens_for_disconnect(
+    manager: &mut ApiKeyManager,
+    ctx: &mut warpui::ModelContext<ApiKeyManager>,
+) -> Option<ChatGptRevocationTokens> {
+    let tokens = manager
+        .codex_tokens()
+        .map(|tokens| ChatGptRevocationTokens {
+            access_token: (!tokens.access_token.trim().is_empty())
+                .then(|| tokens.access_token.clone()),
+            refresh_token: tokens
+                .refresh_token
+                .as_ref()
+                .filter(|token| !token.trim().is_empty())
+                .cloned(),
+        });
+    manager.set_codex_tokens(None, ctx);
+    tokens
 }
 
 impl SettingsPageMeta for WarpAgentPageView {

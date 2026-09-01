@@ -6,13 +6,10 @@ use warp_multi_agent_api::request::settings::ApiKeys;
 use warp_multi_agent_api::request::settings::api_keys::CodexOauthCredentials;
 
 #[cfg(not(target_family = "wasm"))]
-use std::time::Duration;
-
-#[cfg(not(target_family = "wasm"))]
 use super::apply_geap_refresh_to_params;
 use super::{
-	FailReason, MAX_RECOVERY_ATTEMPTS, RecoveryAction, RecoveryBudget, recovery_action,
-	CodexRefreshAction, complete_codex_refresh, should_refresh_codex_request,
+    CodexRefreshAction, FailReason, MAX_RECOVERY_ATTEMPTS, RecoveryAction, RecoveryBudget,
+    complete_codex_refresh, recovery_action, should_refresh_codex_request,
 };
 #[cfg(not(target_family = "wasm"))]
 use super::{ResponseStream, ResponseStreamId};
